@@ -246,7 +246,7 @@ func (s *Seeder) SeedPartitionedStock(ctx context.Context, sku string, stock int
 }
 ```
 
-`scripts/reserve_stock.lua` — atomically decrement **one** shard:
+`internal/lua/reserve_stock.lua` — atomically decrement **one** shard:
 
 ```lua
 -- KEYS[1] = inventory:<sku>:shard:<i>
@@ -317,7 +317,7 @@ a **liveness contract**:
 - The admission worker **never admits a member whose heartbeat is missing** —
   zombies are dropped and their slot reused within the same batch.
 
-`scripts/admit_batch.lua` — FIFO admit with zombie eviction:
+`internal/lua/admit_batch.lua` — FIFO admit with zombie eviction:
 
 ```lua
 -- KEYS[1] = room:<event>:queue (zset)
@@ -397,7 +397,7 @@ Browser                      Gateway                              Redis
    ◀──────── 409 + cached response ──│                                │
 ```
 
-`scripts/claim_idem.lua` — atomic, race-free claim:
+`internal/lua/claim_idem.lua` — atomic, race-free claim:
 
 ```lua
 -- KEYS[1] = idem:<userID>:<eventID>:<idemKey>
@@ -497,7 +497,7 @@ compensation idempotent — two retriers can never double-`INCR`:
              (COMPENSATING) ──INCR──► COMPENSATED
 ```
 
-`scripts/release_stock.lua` — guard + restore in one atomic step:
+`internal/lua/release_stock.lua` — guard + restore in one atomic step:
 
 ```lua
 -- KEYS[1] = reservation:<orderID>
@@ -859,18 +859,22 @@ out of the request context.
 │   ├── queue/                # NATS JetStream stream/consumer setup, publishers
 │   ├── order/                # order writer, payment webhook, timeout consumer,
 │   │                         #   reconciler + compensation triggers
+│   ├── store/                # PostgreSQL (pgxpool): users, products, orders
+│   │                         #   tables + schema.sql (idempotent, embedded)
+│   │                         #   worker persists orders; seed command seeds
+│   │                         #   product catalog + demo users
 │   ├── proxy/                # httputil.ReverseProxy wrapper + forwarding headers
 │   └── metrics/              # Prometheus counters/histograms (/metrics)
-├── scripts/                  # Lua sources (embedded at build via go:embed)
+├── internal/lua/             # Lua sources (canonical; embedded at build via go:embed)
 │   ├── token_bucket.lua
 │   ├── reserve_stock.lua
 │   ├── claim_idem.lua
 │   ├── admit_batch.lua
-│   ├── release_stock.lua
-│   └── seed_events.go        # Generate demo events, pre-warm sharded inventory
+│   ├── consume_admit.lua
+│   └── release_stock.lua
 ├── deploy/
 │   ├── docker-compose.yml
-│   └── Dockerfile.gateway
+│   └── Dockerfile
 ├── test/                     # k6 load-test scenarios
 ├── go.mod
 ├── Makefile
@@ -889,11 +893,29 @@ This brings up, wired together:
 
 | Service | Image | Exposes |
 |---|---|---|
-| `gateway` | `Dockerfile.gateway` | `:8080` |
+| `gateway` | `deploy/Dockerfile` (`cmd/gateway`) | `:8080` |
 | `worker` | same image, `cmd/worker` mode | — |
 | `backend-demo` | same image, `cmd/backend-demo` mode | `:9001` (internal) |
 | `redis` | `redis:7` | `:6379` |
 | `nats` | `nats:2.10` (JetStream enabled) | `:4222` |
+| `postgres` | `postgres:16` (openwar/openwar, DB `openwar`) | `:5432` |
+
+The **worker** is the only Postgres client. It opens the store on boot, applies
+the embedded `internal/store/schema.sql` (idempotent `CREATE TABLE IF NOT
+EXISTS`), and persists each `orders.created` event into `openwar.orders` with
+`status = 'PENDING_PAYMENT'` and `expires_at = now + PAYMENT_WINDOW` — the
+source of truth the payment-timeout consumer and reconciler CAS against (v0.2).
+
+The schema contains three tables:
+
+| Table | Purpose |
+|---|---|
+| `users` | Registered buyers (seeded by `seed-events`; FK target for orders) |
+| `products` | Catalog — one row per sellable SKU (seeded by `seed-events`) |
+| `orders` | Durable orders — PK `order_id`, FK to `users` + `products` |
+
+Run `seed-events` before any purchase to ensure the FK targets exist in
+Postgres (the demo JWT claims `uid=user-42`).
 
 Seed demo data and partitioned inventory, then simulate a war:
 
@@ -907,13 +929,14 @@ docker compose run --rm k6 run /scripts/flashsale.js
 
 ## Configuration
 
-Environment variables honored by the gateway:
+Environment variables honored by the gateway and worker:
 
 | Variable | Default | Description |
 |---|---|---|
 | `LISTEN_ADDR` | `:8080` | Gateway listen address |
 | `REDIS_ADDR` | `localhost:6379` | Redis (bucket + queue + inventory state) |
 | `NATS_URL` | `nats://localhost:4222` | NATS connection |
+| `DATABASE_URL` | `postgres://openwar:openwar@localhost:5432/openwar` | PostgreSQL DSN (**worker** — durable order store / source of truth) |
 | `BACKEND_URL` | `http://backend-demo:9001` | Upstream for proxied routes |
 | `ADMISSION_RATE` | `100` | Users admitted per second (per event) |
 | `ADMISSION_TTL` | `5m` | Admission-token lifetime |
