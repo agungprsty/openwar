@@ -1,5 +1,6 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
+import crypto from 'k6/crypto';
 
 export const options = {
   scenarios: {
@@ -20,15 +21,48 @@ export const options = {
 
 const BASE = __ENV.BASE_URL || 'http://localhost:8080';
 const EVENT = __ENV.EVENT || 'flash-sale-001';
+const JWT_SECRET = __ENV.JWT_SECRET || 'docker-demo-secret';
+
+function base64UrlEncode(str) {
+  return btoa(str)
+    .replace(/=/g, '')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_');
+}
+
+function generateJWT(secret, uid) {
+  const header = JSON.stringify({ alg: 'HS256', typ: 'JWT' });
+  const now = Math.floor(Date.now() / 1000);
+  const payload = JSON.stringify({
+    uid: uid,
+    iat: now,
+    exp: now + 86400,
+  });
+
+  const encodedHeader = base64UrlEncode(header);
+  const encodedPayload = base64UrlEncode(payload);
+  const tokenString = `${encodedHeader}.${encodedPayload}`;
+
+  const sigBase64 = crypto.hmac('sha256', secret, tokenString, 'base64');
+  const encodedSignature = sigBase64
+    .replace(/=/g, '')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_');
+
+  return `${tokenString}.${encodedSignature}`;
+}
 
 export function setup() {
-  return { token: 'demo-token' };
+  return { secret: JWT_SECRET };
 }
 
 export default function (data) {
+  const uid = `user-${(__VU % 50) + 1}`;
+  const token = generateJWT(data.secret, uid);
+
   // 1. Join the waiting room (establishes session cookie)
   const join = http.post(`${BASE}/event/${EVENT}/queue`, '{}', {
-    headers: { Authorization: `Bearer ${data.token}` },
+    headers: { Authorization: `Bearer ${token}` },
   });
   check(join, { 'join accepted': (r) => r.status === 202 || r.status === 201 });
 
@@ -55,7 +89,7 @@ export default function (data) {
         headers: {
           Cookie: cook,
           'Idempotency-Key': key,
-          Authorization: `Bearer ${data.token}`,
+          Authorization: `Bearer ${token}`,
         },
       },
     );

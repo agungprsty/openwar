@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"strings"
 
 	"github.com/openwar/openwar/internal/lua"
 	"github.com/openwar/openwar/internal/metrics"
@@ -81,8 +82,20 @@ func (r *ShardRouter) Compensate(ctx context.Context, resKey, invKey string, qty
 	remaining, _ := arr[1].(int64)
 	if restored {
 		metrics.CompensationTotal.WithLabelValues(reason).Inc()
+		if sku := parseSKUFromInvKey(invKey); sku != "" {
+			r.rdb.Del(ctx, "soldout:"+sku)
+		}
 	}
 	return remaining, nil
+}
+
+func parseSKUFromInvKey(invKey string) string {
+	s := strings.TrimPrefix(invKey, "inventory:")
+	idx := strings.LastIndex(s, ":shard:")
+	if idx <= 0 {
+		return ""
+	}
+	return s[:idx]
 }
 
 func toInt(v interface{}) int64 {

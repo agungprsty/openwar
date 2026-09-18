@@ -28,7 +28,7 @@ func Middleware(room *waitingroom.Room) func(http.Handler) http.Handler {
 				return
 			}
 
-			ok, err := room.HasAdmission(r.Context(), event, sid)
+			ok, err := room.ConsumeAdmission(r.Context(), event, sid)
 			if err != nil || !ok {
 				middleware.WriteJSON(w, http.StatusForbidden, map[string]string{
 					"error":  "not admitted to checkout",
