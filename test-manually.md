@@ -1,13 +1,38 @@
-# Manual Testing Guide — OpenWar
+# Testing Guide — OpenWar (Manual & Otomatis)
 
-Dokumen ini berisi panduan langkah-demi-langkah pengujian manual untuk **OpenWar** (Token Bucket, Virtual Waiting Room, Sharded Inventory, dan Idempotency Gate).
+Dokumen ini berisi panduan lengkap untuk **pengujian otomatis** (unit test, build, k6 load test) dan **pengujian manual** (curl, SQL, Redis CLI, payment timeout v0.2) pada **OpenWar**.
 
 ---
 
-## Preparasi Environment
+## 1. Pengujian Otomatis (Automated Tests)
 
-### 1. Jalankan Service dengan Docker Compose
+### A. Unit Test & Code Quality
+Jalankan linting dan unit test Go di seluruh package:
 
+```bash
+# Verify sintaks & tipe data
+make test
+
+# Atau jalankan go test langsung dengan output verbose
+go test -v ./...
+```
+
+### B. Automated Load Testing (k6)
+Gunakan Grafana k6 via Docker Compose untuk mensimulasikan beban ribuan pengguna bersamaan dengan autentikasi JWT dinamis:
+
+```bash
+docker compose -f deploy/docker-compose.yml --profile tools run --rm k6 run /scripts/flashsale.js
+```
+
+**Ekspektasi Hasil:**
+- `join accepted` & `purchase accepted` berhasil dipenuhi.
+- `http_req_failed` < 5%.
+
+---
+
+## 2. Preparasi Environment Pengujian Manual
+
+### Jalankan Seluruh Container Docker
 ```bash
 make up
 # Atau: docker compose -f deploy/docker-compose.yml up --build -d
@@ -16,14 +41,13 @@ make up
 Service yang berjalan:
 - `gateway` (:8080)
 - `backend-demo` (:9001 internal)
-- `worker` (admission + durable order worker)
+- `worker` (admission + durable order worker + payment timeout + reconciler + DLQ)
 - `redis` (:6379)
 - `nats` (:4222 / :8222)
 - `postgres` (:5432)
 
-### 2. Seed Catalog & Partitioned Inventory
-
-Jalankan seeder untuk mengisi database PostgreSQL dan mem-prewarm 10 tiket ke 4 shard Redis:
+### Seed Data Katalog & Partitioned Inventory
+Mengisi data pengguna demo di PostgreSQL dan pre-warm 10 tiket ke 4 shard Redis:
 
 ```bash
 docker compose -f deploy/docker-compose.yml exec gateway /app/openwar seed-events --event flash-sale-001 --qty 10 --shards 4
@@ -31,11 +55,9 @@ docker compose -f deploy/docker-compose.yml exec gateway /app/openwar seed-event
 
 ---
 
-## Skenario 1: Testing Alur Utama (Queue → Heartbeat → Purchase)
+## 3. Pengujian Manual Alur Utama (v0.1 & v0.2)
 
-### Step 1.1: Generate JWT Token Valid untuk `user-1`
-
-Buat token JWT bertanda tangan HMAC-SHA256 dengan secret `docker-demo-secret`:
+### Step 3.1: Generate JWT Token Valid untuk `user-1`
 
 ```bash
 HEADER=$(echo -n '{"alg":"HS256","typ":"JWT"}' | base64 | tr -d '=' | tr '/+' '_-')
@@ -44,27 +66,22 @@ SIG=$(echo -n "${HEADER}.${PAYLOAD}" | openssl dgst -sha256 -hmac "docker-demo-s
 TOKEN="${HEADER}.${PAYLOAD}.${SIG}"
 ```
 
-### Step 1.2: Join Waiting Room Queue
-
+### Step 3.2: Join Waiting Room Queue
 ```bash
 curl -i -X POST http://localhost:8080/event/flash-sale-001/queue \
   -H "Authorization: Bearer $TOKEN"
 ```
+* **Ekspektasi:** `HTTP 202 Accepted` dan header `Set-Cookie: openwar_session=<SESSION_ID>`.  
+*Ambil nilai `<SESSION_ID>` dari header response.*
 
-**Ekspektasi:** `HTTP 202 Accepted` dan header `Set-Cookie: openwar_session=<SESSION_ID>`.  
-*Ambil nilai `<SESSION_ID>` dari cookie.*
-
-### Step 1.3: Kirim Heartbeat Liveness
-
+### Step 3.3: Heartbeat Liveness & Admission
 ```bash
 curl -i -X POST http://localhost:8080/event/flash-sale-001/queue/heartbeat \
   -H "Cookie: openwar_session=<SESSION_ID>"
 ```
+* **Ekspektasi:** `HTTP 200 OK` dengan `"admitted": true`.
 
-**Ekspektasi:** `HTTP 200 OK` dengan JSON `{"admitted": true, "position": 0, ...}`.
-
-### Step 1.4: Lakukan Purchase Pertama
-
+### Step 3.4: Purchase / Checkout
 ```bash
 IDEM_KEY="11111111-2222-4333-8444-555555555555"
 
@@ -75,17 +92,41 @@ curl -i -X POST http://localhost:8080/event/flash-sale-001/purchase \
   -H "Cookie: openwar_session=<SESSION_ID>" \
   -d '{"sku":"flash-sale-001:ticket","qty":1}'
 ```
-
-**Ekspektasi:** `HTTP 201 Created` dengan JSON `{"orderId":"ord-...", "status":"PENDING_PAYMENT"}`.
+* **Ekspektasi:** `HTTP 201 Created` dengan JSON `{"orderId":"ord-...", "status":"PENDING_PAYMENT"}`.
 
 ---
 
-## Skenario 2: Testing Verification & Edge Cases
+## 4. Pengujian Fitur v0.2 (Payment Timeout, CAS Cancel & Restock)
 
-### Test 2.1: Single-Use Admission Token Contract
+### Test 4.1: Otomatis Timeout Payment (15 Menit) & Stock Restock
+1. Setelah membuat order di **Step 3.4**, periksa data di PostgreSQL:
+   ```bash
+   docker compose exec postgres psql -U openwar -d openwar -c "SELECT order_id, user_id, status, expires_at FROM openwar.orders;"
+   ```
+   * **Status Awal:** `PENDING_PAYMENT`.
+2. Tunggu hingga waktu `expires_at` terlewati (atau dalam pengujian unit/integrasi waktu expired dipercepat):
+   - NATS JetStream Message Scheduler akan menembakkan event `orders.timeout`.
+   - Worker memproses timeout, mengupdate status SQL via atomic CAS ke `CANCELLED_TIMEOUT`, dan mengembalikan stok ke shard Redis.
+3. Periksa kembali PostgreSQL setelah timeout:
+   ```bash
+   docker compose exec postgres psql -U openwar -d openwar -c "SELECT order_id, status, cancelled_at FROM openwar.orders;"
+   ```
+   * **Status Akhir:** `CANCELLED_TIMEOUT` dan `cancelled_at` terisi timestamptz.
 
-Jalankan kembali perintah Purchase dengan cookie session yang sama (`openwar_session=<SESSION_ID>`):
+### Test 4.2: Inspeksi Redis State & Sold-Out Latch
+Gunakan Redis CLI untuk melihat sisa stok per-shard dan memverifikasi bahwa `soldout:<sku>` latch terhapus saat restock:
 
+```bash
+docker compose exec redis redis-cli MGET inventory:flash-sale-001:ticket:shard:0 inventory:flash-sale-001:ticket:shard:1 inventory:flash-sale-001:ticket:shard:2 inventory:flash-sale-001:ticket:shard:3
+docker compose exec redis redis-cli EXISTS soldout:flash-sale-001:ticket
+```
+
+---
+
+## 5. Pengujian Single-Use Admission & Idempotency Edge Cases
+
+### Test 5.1: Single-Use Admission Token Contract
+Coba panggil endpoint purchase sekali lagi dengan cookie session yang sama:
 ```bash
 curl -i -X POST http://localhost:8080/event/flash-sale-001/purchase \
   -H "Authorization: Bearer $TOKEN" \
@@ -94,30 +135,8 @@ curl -i -X POST http://localhost:8080/event/flash-sale-001/purchase \
   -H "Cookie: openwar_session=<SESSION_ID>" \
   -d '{"sku":"flash-sale-001:ticket","qty":1}'
 ```
+* **Ekspektasi:** `HTTP 403 Forbidden` (`{"error": "not admitted to checkout"}`).
 
-**Ekspektasi:** `HTTP 403 Forbidden` (`{"error": "not admitted to checkout"}`).
-
-### Test 2.2: Idempotency Replay Guard
-
-Kirim ulang request purchase menggunakan `Idempotency-Key` yang sama (`11111111-2222-4333-8444-555555555555`):
-
-**Ekspektasi:**
-- Jika request sebelumnya sukses (`201`), gateway mengembalikan response ter-cache dengan header `X-Idempotent-Replay: true`.
-- Jika request sebelumnya gagal (`5xx`), gateway mengizinkan permohonan di-retry dari awal tanpa tertahan `409 Conflict`.
-
-### Test 2.3: Restock & Sold-Out Latch Clearing
-
-1. Pesan sisa tiket hingga habis. Request ke-11 akan mengembalikan `HTTP 410 Gone / sold out`.
-2. Ketika terjadi pembatalan / kompensasi stok, key `soldout:<sku>` akan terhapus otomatis di Redis sehingga tiket yang di-refund bisa dipesan kembali.
-
----
-
-## Skenario 3: Automated Load Testing (k6)
-
-Jalankan pengujian beban dengan script k6 yang mensimulasikan pengguna dengan token JWT bertanda tangan valid:
-
-```bash
-docker compose -f deploy/docker-compose.yml --profile tools run --rm k6 run /scripts/flashsale.js
-```
-
-**Ekspektasi:** Seluruh request dari k6 terautentikasi dan tingkat error HTTP `< 5%`.
+### Test 5.2: Idempotency Replay
+Kirim request purchase menggunakan `Idempotency-Key` yang sama (`11111111-2222-4333-8444-555555555555`):
+* **Ekspektasi:** Gateway mengembalikan response cache sebelumnya dengan header `X-Idempotent-Replay: true`.
