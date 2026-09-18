@@ -189,6 +189,44 @@ func (s *Store) CountOrders(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
+// CancelOrderTimeout performs an atomic CAS status update for an expired order.
+// Returns true if the order status was updated from PENDING_PAYMENT to CANCELLED_TIMEOUT.
+func (s *Store) CancelOrderTimeout(ctx context.Context, orderID string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE openwar.orders
+		SET status = 'CANCELLED_TIMEOUT', cancelled_at = NOW(), version = version + 1
+		WHERE order_id = $1 AND status = 'PENDING_PAYMENT' AND expires_at <= NOW()`, orderID)
+	if err != nil {
+		return false, fmt.Errorf("cancel order timeout %s: %w", orderID, err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// FetchExpiredOrders retrieves expired PENDING_PAYMENT orders using cursor pagination.
+func (s *Store) FetchExpiredOrders(ctx context.Context, limit int) ([]Order, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT order_id, user_id, event_id, sku, qty, status, expires_at, created_at, version
+		FROM openwar.orders
+		WHERE status = 'PENDING_PAYMENT' AND expires_at <= NOW()
+		ORDER BY created_at ASC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("fetch expired orders: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Order
+	for rows.Next() {
+		var o Order
+		if err := rows.Scan(&o.OrderID, &o.UserID, &o.EventID, &o.Sku,
+			&o.Qty, &o.Status, &o.Expires, &o.Created, &o.Version); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------

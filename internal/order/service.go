@@ -108,6 +108,20 @@ func (s *Service) publish(ctx context.Context, payload []byte) error {
 	return nil
 }
 
+// ArmTimeout schedules a one-shot payment timeout event using JetStream's native scheduler.
+func (s *Service) ArmTimeout(ctx context.Context, orderID string, deadline time.Time) error {
+	m := nats.NewMsg(queue.SchedulesTimeoutPrefix + orderID)
+	m.Data = []byte(orderID)
+	m.Header.Set("Nats-Schedule", "@at "+deadline.UTC().Format(time.RFC3339))
+	m.Header.Set("Nats-Schedule-Target", queue.OrdersTimeout)
+
+	ack, err := s.js.PublishMsg(m)
+	if err != nil || ack == nil {
+		return fmt.Errorf("arm timeout publish: %w", err)
+	}
+	return nil
+}
+
 // genOrderID prefixes the order id with the request id when present (typed
 // context key) so support can correlate an order to its request.
 func genOrderID(ctx context.Context) string {

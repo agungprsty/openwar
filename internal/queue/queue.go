@@ -5,8 +5,12 @@ import (
 )
 
 const (
-	OrdersCreated = "orders.created"
-	QueueNotify   = "queue.notify"
+	OrdersCreated          = "orders.created"
+	OrdersCancelled        = "orders.cancelled"
+	OrdersTimeout          = "orders.timeout"
+	OrdersDLQ              = "orders.dlq"
+	QueueNotify            = "queue.notify"
+	SchedulesTimeoutPrefix = "schedules.timeout."
 )
 
 // Setup ensures required JetStream streams exist (idempotent on boot).
@@ -19,9 +23,22 @@ func Setup(nc *nats.Conn) (nats.JetStreamContext, error) {
 	defs := []*nats.StreamConfig{
 		{
 			Name:     "ORDERS",
-			Subjects: []string{OrdersCreated},
+			Subjects: []string{OrdersCreated, OrdersCancelled},
 			Storage:  nats.FileStorage,
 			MaxAge:   24 * 3600 * 1e9, // 24h in ns
+		},
+		{
+			Name:        "ORDERS_TIMEOUT",
+			Subjects:    []string{SchedulesTimeoutPrefix + ">", OrdersTimeout},
+			Storage:     nats.FileStorage,
+			MaxAge:      24 * 3600 * 1e9,
+			AllowMsgTTL: true, // JetStream header-initiated message scheduling / TTL
+		},
+		{
+			Name:     "ORDERS_DLQ",
+			Subjects: []string{OrdersDLQ},
+			Storage:  nats.FileStorage,
+			MaxAge:   7 * 24 * 3600 * 1e9, // 7 days in ns
 		},
 		{
 			Name:     "QUEUE_NOTIFY",
@@ -32,12 +49,7 @@ func Setup(nc *nats.Conn) (nats.JetStreamContext, error) {
 	}
 
 	for _, d := range defs {
-		if _, err := js.AddStream(&nats.StreamConfig{
-			Name:     d.Name,
-			Subjects: d.Subjects,
-			Storage:  d.Storage,
-			MaxAge:   d.MaxAge,
-		}); err != nil && !isAlreadyExists(err) {
+		if _, err := js.AddStream(d); err != nil && !isAlreadyExists(err) {
 			return nil, err
 		}
 	}
