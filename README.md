@@ -860,11 +860,11 @@ out of the request context.
 │   ├── order/                # order writer, payment webhook, timeout consumer,
 │   │                         #   reconciler + compensation triggers
 │   ├── store/                # PostgreSQL (pgxpool): users, products, orders
-│   │                         #   tables + schema.sql (idempotent, embedded)
 │   │                         #   worker persists orders; seed command seeds
 │   │                         #   product catalog + demo users
 │   ├── proxy/                # httputil.ReverseProxy wrapper + forwarding headers
 │   └── metrics/              # Prometheus counters/histograms (/metrics)
+├── migrations/               # Versioned SQL migrations (embedded via go:embed)
 ├── internal/lua/             # Lua sources (canonical; embedded at build via go:embed)
 │   ├── token_bucket.lua
 │   ├── reserve_stock.lua
@@ -901,8 +901,8 @@ This brings up, wired together:
 | `postgres` | `postgres:16` (openwar/openwar, DB `openwar`) | `:5432` |
 
 The **worker** is the only Postgres client. It opens the store on boot, applies
-the embedded `internal/store/schema.sql` (idempotent `CREATE TABLE IF NOT
-EXISTS`), and persists each `orders.created` event into `openwar.orders` with
+the embedded migrations in `migrations/` (tracked via `openwar.schema_migrations`),
+and persists each `orders.created` event into `openwar.orders` with
 `status = 'PENDING_PAYMENT'` and `expires_at = now + PAYMENT_WINDOW` — the
 source of truth the payment-timeout consumer and reconciler CAS against (v0.2).
 

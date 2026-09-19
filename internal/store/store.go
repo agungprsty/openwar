@@ -2,13 +2,13 @@ package store
 
 import (
 	"context"
-	_ "embed"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/openwar/openwar/migrations"
 )
 
 // Store is the PostgreSQL access layer (worker + seed commands).
@@ -37,7 +37,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 func (s *Store) Close() { s.pool.Close() }
 
 func (s *Store) EnsureSchema(ctx context.Context) error {
-	return Migrate(ctx, s.pool)
+	return migrations.Migrate(ctx, s.pool)
 }
 
 // ---------------------------------------------------------------------------
