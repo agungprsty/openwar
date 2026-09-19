@@ -20,7 +20,7 @@ export const options = {
   },
 };
 
-const BASE = __ENV.BASE_URL || 'http://localhost:8080';
+const BASE = __ENV.BASE_URL || 'http://gateway:8080';
 const EVENT = __ENV.EVENT || 'flash-sale-001';
 const JWT_SECRET = __ENV.JWT_SECRET || 'docker-demo-secret';
 
