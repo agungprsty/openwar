@@ -11,9 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-//go:embed schema.sql
-var schema string
-
 // Store is the PostgreSQL access layer (worker + seed commands).
 type Store struct {
 	pool *pgxpool.Pool
@@ -40,10 +37,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 func (s *Store) Close() { s.pool.Close() }
 
 func (s *Store) EnsureSchema(ctx context.Context) error {
-	if _, err := s.pool.Exec(ctx, schema); err != nil {
-		return fmt.Errorf("apply schema: %w", err)
-	}
-	return nil
+	return Migrate(ctx, s.pool)
 }
 
 // ---------------------------------------------------------------------------

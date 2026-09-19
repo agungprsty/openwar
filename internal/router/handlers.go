@@ -4,19 +4,25 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/openwar/openwar/internal/middleware"
+	"github.com/openwar/openwar/internal/ratelimiter"
 	"github.com/openwar/openwar/internal/waitingroom"
 )
 
 type roomHandlers struct {
 	room        *waitingroom.Room
+	limiter     *ratelimiter.Limiter
 	heartbeatMs int64
 }
 
-func addRoomHandlers(mux *http.ServeMux, base func(http.Handler) http.Handler, room *waitingroom.Room, heartbeatMs int64) {
-	h := &roomHandlers{room: room, heartbeatMs: heartbeatMs}
+func addRoomHandlers(mux *http.ServeMux, base func(http.Handler) http.Handler, room *waitingroom.Room, limiter *ratelimiter.Limiter, heartbeatMs int64) {
+	h := &roomHandlers{room: room, limiter: limiter, heartbeatMs: heartbeatMs}
 
 	mux.Handle("POST /event/{id}/queue", base(http.HandlerFunc(h.join)))
 	mux.Handle("GET /event/{id}/queue/status", base(http.HandlerFunc(h.status)))
@@ -24,8 +30,47 @@ func addRoomHandlers(mux *http.ServeMux, base func(http.Handler) http.Handler, r
 	mux.Handle("POST /event/{id}/admit", base(http.HandlerFunc(h.admit)))
 }
 
+func (h *roomHandlers) checkIPRateLimit(w http.ResponseWriter, r *http.Request, event string) bool {
+	if h.limiter == nil {
+		return true
+	}
+	ip := clientIP(r)
+	res := h.limiter.Allow(r.Context(), fmt.Sprintf("rl:ip:%s:%s", event, ip))
+	if !res.Allowed {
+		w.Header().Set("Retry-After", strconv.Itoa(int(res.RetryAfter.Seconds())))
+		w.Header().Set("X-RateLimit-Limit", strconv.Itoa(int(h.limiter.Capacity())))
+		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(int(res.Remaining)))
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{
+			"error": "too many queue requests from this IP",
+		})
+		return false
+	}
+	return true
+}
+
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if idx := strings.Index(xff, ","); idx != -1 {
+			return strings.TrimSpace(xff[:idx])
+		}
+		return strings.TrimSpace(xff)
+	}
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return strings.TrimSpace(xri)
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
 func (h *roomHandlers) join(w http.ResponseWriter, r *http.Request) {
 	event := r.PathValue("id")
+	if !h.checkIPRateLimit(w, r, event) {
+		return
+	}
+
 	sid := middleware.SessionIDFrom(r)
 	if sid == "" {
 		sid = newSID()

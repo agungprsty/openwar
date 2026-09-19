@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -14,8 +15,9 @@ type Config struct {
 	RedisAddr   string
 	NATSURL     string
 	DatabaseURL string
-	BackendURL  string
-	JWTSecret   string
+	BackendURL     string
+	JWTSecret      string
+	AllowedOrigins []string
 
 	AdmissionRate     int
 	AdmissionTTL      time.Duration
@@ -30,6 +32,23 @@ type Config struct {
 func getenv(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+func getslice(key string, def []string) []string {
+	if v := os.Getenv(key); v != "" {
+		parts := strings.Split(v, ",")
+		var res []string
+		for _, p := range parts {
+			trimmed := strings.TrimSpace(p)
+			if trimmed != "" {
+				res = append(res, trimmed)
+			}
+		}
+		if len(res) > 0 {
+			return res
+		}
 	}
 	return def
 }
@@ -61,6 +80,7 @@ func Load() Config {
 		DatabaseURL:       getenv("DATABASE_URL", "postgres://openwar:openwar@localhost:5432/openwar"),
 		BackendURL:        getenv("BACKEND_URL", "http://backend-demo:9001"),
 		JWTSecret:         getenv("JWT_SECRET", "dev-secret-change-me"),
+		AllowedOrigins:    getslice("ALLOWED_ORIGINS", []string{"*"}),
 		AdmissionRate:     getint("ADMISSION_RATE", 100),
 		AdmissionTTL:      getdur("ADMISSION_TTL", 5*time.Minute),
 		HeartbeatInterval: getdur("HEARTBEAT_INTERVAL", 15*time.Second),

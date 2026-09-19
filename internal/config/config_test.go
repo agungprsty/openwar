@@ -40,11 +40,13 @@ func TestLoad_CustomEnv(t *testing.T) {
 	os.Setenv("ADMISSION_RATE", "500")
 	os.Setenv("HEARTBEAT_INTERVAL", "5s")
 	os.Setenv("JWT_SECRET", "super-secret-key-12345")
+	os.Setenv("ALLOWED_ORIGINS", "https://app.openwar.io, https://admin.openwar.io")
 	defer func() {
 		os.Unsetenv("APP_ENV")
 		os.Unsetenv("ADMISSION_RATE")
 		os.Unsetenv("HEARTBEAT_INTERVAL")
 		os.Unsetenv("JWT_SECRET")
+		os.Unsetenv("ALLOWED_ORIGINS")
 	}()
 
 	cfg := config.Load()
@@ -59,6 +61,9 @@ func TestLoad_CustomEnv(t *testing.T) {
 	}
 	if cfg.JWTSecret != "super-secret-key-12345" {
 		t.Errorf("expected JWTSecret 'super-secret-key-12345', got %q", cfg.JWTSecret)
+	}
+	if len(cfg.AllowedOrigins) != 2 || cfg.AllowedOrigins[0] != "https://app.openwar.io" || cfg.AllowedOrigins[1] != "https://admin.openwar.io" {
+		t.Errorf("expected AllowedOrigins parsed, got %v", cfg.AllowedOrigins)
 	}
 }
 

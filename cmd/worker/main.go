@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -78,6 +79,8 @@ func main() {
 	defer worker.Stop()
 	logger.Info("admission worker started", "event", event, "rate", cfg.AdmissionRate)
 
+	var wg sync.WaitGroup
+
 	// 1. Order Worker (orders.created)
 	orderSub, err := js.SubscribeSync(queue.OrdersCreated,
 		nats.Durable("order-processor"),
@@ -90,7 +93,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for {
 			select {
 			case <-ctx.Done():
@@ -122,7 +127,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for {
 			select {
 			case <-ctx.Done():
@@ -150,7 +157,9 @@ func main() {
 		nats.AckWait(30*time.Second),
 	)
 	if err == nil {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			for {
 				select {
 				case <-ctx.Done():
@@ -169,7 +178,27 @@ func main() {
 
 	logger.Info("all workers started")
 	<-ctx.Done()
-	logger.Info("worker shutting down")
+	logger.Info("worker shutting down, draining subscribers...")
+
+	// Drain NATS subscriptions gracefully
+	_ = orderSub.Drain()
+	_ = timeoutSub.Drain()
+	if dlqSub != nil {
+		_ = dlqSub.Drain()
+	}
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(shutdownDone)
+	}()
+
+	select {
+	case <-shutdownDone:
+		logger.Info("all in-flight messages processed cleanly")
+	case <-time.After(15 * time.Second):
+		logger.Warn("worker shutdown timed out waiting for in-flight messages")
+	}
 }
 
 func handleOrder(ctx context.Context, rdb *redis.Client, orders *store.Store, orderSvc *order.Service, paymentWindow time.Duration, logger *slog.Logger, msg *nats.Msg) error {

@@ -67,7 +67,7 @@ func main() {
 	deps := router.Deps{
 		Logger:         logger,
 		JWTSecret:      []byte(cfg.JWTSecret),
-		AllowedOrigins: []string{"*"},
+		AllowedOrigins: cfg.AllowedOrigins,
 		RDB:            rdb,
 		Room:           room,
 		Limiter:        limiter,

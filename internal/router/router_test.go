@@ -40,8 +40,9 @@ func setupTestRouter(t *testing.T) (*http.ServeMux, *waitingroom.Room, *miniredi
 }
 
 func TestRouter_Healthz(t *testing.T) {
-	mux, _, _ := setupTestRouter(t)
+	mux, _, s := setupTestRouter(t)
 
+	// 1. Healthy
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -49,8 +50,75 @@ func TestRouter_Healthz(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected 200 OK on /healthz, got %d", rec.Code)
 	}
-	if rec.Body.String() != "ok" {
-		t.Errorf("expected body 'ok', got %q", rec.Body.String())
+
+	var healthResp struct {
+		Status     string            `json:"status"`
+		Components map[string]string `json:"components"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&healthResp); err != nil {
+		t.Fatalf("failed to decode health response: %v", err)
+	}
+	if healthResp.Status != "UP" || healthResp.Components["redis"] != "UP" {
+		t.Errorf("expected status UP, got %+v", healthResp)
+	}
+
+	// 2. Unhealthy when Redis is down
+	s.Close()
+	req2 := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec2 := httptest.NewRecorder()
+	mux.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 Service Unavailable on dead redis, got %d", rec2.Code)
+	}
+}
+
+func TestRouter_IPRateLimit(t *testing.T) {
+	s := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: s.Addr()})
+	room := waitingroom.New(rdb, 15*time.Second, 5*time.Minute)
+	limiter := ratelimiter.New(rdb, 2, 0.1, ratelimiter.FailClosed) // capacity 2
+	backendURL, _ := url.Parse("http://localhost:9001")
+
+	deps := router.Deps{
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		JWTSecret:      []byte("test-secret"),
+		AllowedOrigins: []string{"*"},
+		RDB:            rdb,
+		Room:           room,
+		Limiter:        limiter,
+		IdemWindow:     24 * time.Hour,
+		HeartbeatMs:    5000,
+		BackendURL:     backendURL,
+	}
+
+	mux := router.New(deps)
+
+	// Call 1 -> OK
+	req1 := httptest.NewRequest(http.MethodPost, "/event/flash-001/queue", nil)
+	req1.RemoteAddr = "192.168.1.50:12345"
+	rec1 := httptest.NewRecorder()
+	mux.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 on call 1, got %d", rec1.Code)
+	}
+
+	// Call 2 -> OK
+	req2 := httptest.NewRequest(http.MethodPost, "/event/flash-001/queue", nil)
+	req2.RemoteAddr = "192.168.1.50:12345"
+	rec2 := httptest.NewRecorder()
+	mux.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 on call 2, got %d", rec2.Code)
+	}
+
+	// Call 3 -> 429 Too Many Requests from same IP
+	req3 := httptest.NewRequest(http.MethodPost, "/event/flash-001/queue", nil)
+	req3.RemoteAddr = "192.168.1.50:12345"
+	rec3 := httptest.NewRecorder()
+	mux.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 on call 3 from same IP, got %d", rec3.Code)
 	}
 }
 
