@@ -1,6 +1,7 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 import crypto from 'k6/crypto';
+import encoding from 'k6/encoding';
 
 export const options = {
   scenarios: {
@@ -24,10 +25,7 @@ const EVENT = __ENV.EVENT || 'flash-sale-001';
 const JWT_SECRET = __ENV.JWT_SECRET || 'docker-demo-secret';
 
 function base64UrlEncode(str) {
-  return btoa(str)
-    .replace(/=/g, '')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_');
+  return encoding.b64encode(str, 'rawurl');
 }
 
 function generateJWT(secret, uid) {
