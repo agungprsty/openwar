@@ -107,7 +107,9 @@ function sidFromCookies(cookies) {
 }
 
 export function handleSummary(data) {
+  const dateStr = new Date().toISOString().replace(/[:.]/g, '-');
+  const filepath = `/scripts/result_${dateStr}.json`;
   return {
-    '/scripts/result.json': JSON.stringify(data, null, 2),
+    [filepath]: JSON.stringify(data, null, 2),
   };
 }
