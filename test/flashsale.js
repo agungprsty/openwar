@@ -105,3 +105,9 @@ function sidFromCookies(cookies) {
   }
   return '';
 }
+
+export function handleSummary(data) {
+  return {
+    '/scripts/result.json': JSON.stringify(data, null, 2),
+  };
+}

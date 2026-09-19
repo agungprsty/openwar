@@ -113,7 +113,7 @@ services:
     image: grafana/k6:latest
     profiles: ["tools"]
     volumes:
-      - ../test:/scripts:ro
+      - ../test:/scripts
     depends_on:
       gateway:
         condition: service_started
