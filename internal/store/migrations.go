@@ -2,17 +2,14 @@ package store
 
 import (
 	"context"
-	"embed"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/openwar/openwar/migrations"
 )
-
-//go:embed all:migrations/*.sql
-var migrationFS embed.FS
 
 // Migrate applies all pending migrations in order.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
@@ -28,7 +25,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		return fmt.Errorf("create schema_migrations table: %w", err)
 	}
 
-	entries, err := migrationFS.ReadDir("migrations")
+	entries, err := migrations.FS.ReadDir(".")
 	if err != nil {
 		return fmt.Errorf("read migrations directory: %w", err)
 	}
@@ -51,7 +48,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 			continue
 		}
 
-		content, err := migrationFS.ReadFile("migrations/" + filename)
+		content, err := migrations.FS.ReadFile(filename)
 		if err != nil {
 			return fmt.Errorf("read migration file %s: %w", filename, err)
 		}
