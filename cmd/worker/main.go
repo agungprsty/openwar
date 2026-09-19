@@ -23,6 +23,10 @@ import (
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		logger.Error("invalid configuration", "err", err)
+		os.Exit(1)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -47,7 +51,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer orders.Close()
-	logger.Info("postgres connected", "url", cfg.DatabaseURL)
+	logger.Info("postgres connected", "url", config.SanitizeDSN(cfg.DatabaseURL))
 
 	router := inventory.NewShardRouter(rdb, cfg.InventoryShards)
 	orderSvc := order.NewService(rdb, nc, js, router, cfg.ReservationTTL)

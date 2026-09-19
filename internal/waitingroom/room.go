@@ -34,23 +34,21 @@ func admitKey(event, sid string) string {
 	return fmt.Sprintf("room:%s:admitted:%s", event, sid)
 }
 
-// Join adds session to the waiting room queue. Duplicate joins are no-ops
-// (ZADD NX), returning the existing position.
+// Join adds session to the waiting room queue and marks it alive immediately.
+// Duplicate joins are no-ops (ZADD NX), returning the existing position.
 func (rm *Room) Join(ctx context.Context, event, sid string) (int64, error) {
-	pos, err := rm.rdb.ZAddNX(ctx, queueKey(event), redis.Z{
+	pipe := rm.rdb.TxPipeline()
+	pipe.Set(ctx, hbKey(event, sid), 1, rm.heartbeatTTL)
+	pipe.ZAddNX(ctx, queueKey(event), redis.Z{
 		Score:  float64(time.Now().UnixNano()),
 		Member: sid,
-	}).Result()
-	if err != nil {
+	})
+	rank := pipe.ZRank(ctx, queueKey(event), sid)
+	if _, err := pipe.Exec(ctx); err != nil {
 		return 0, err
 	}
-	rank, err := rm.rdb.ZRank(ctx, queueKey(event), sid).Result()
-	if err != nil {
-		return 0, err
-	}
-	_ = pos
 	metrics.QueueDepth.WithLabelValues(event).Set(rm.depth(ctx, event))
-	return rank, nil
+	return rank.Val(), nil
 }
 
 func (rm *Room) depth(ctx context.Context, event string) float64 {

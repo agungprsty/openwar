@@ -1,12 +1,15 @@
 package config
 
 import (
+	"errors"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
 )
 
 type Config struct {
+	AppEnv      string
 	ListenAddr  string
 	RedisAddr   string
 	NATSURL     string
@@ -51,6 +54,7 @@ func getint(key string, def int) int {
 
 func Load() Config {
 	return Config{
+		AppEnv:            getenv("APP_ENV", "development"),
 		ListenAddr:        getenv("LISTEN_ADDR", ":8080"),
 		RedisAddr:         getenv("REDIS_ADDR", "localhost:6379"),
 		NATSURL:           getenv("NATS_URL", "nats://localhost:4222"),
@@ -66,4 +70,26 @@ func Load() Config {
 		PaymentWindow:     getdur("PAYMENT_WINDOW", 15*time.Minute),
 		ReservationTTL:    getdur("RESERVATION_TTL", 25*time.Minute),
 	}
+}
+
+// Validate checks configuration for security risks and missing fields.
+func (c Config) Validate() error {
+	if (c.AppEnv == "production" || c.AppEnv == "prod") && (c.JWTSecret == "" || c.JWTSecret == "dev-secret-change-me") {
+		return errors.New("JWT_SECRET must be configured with a secure secret in production")
+	}
+	return nil
+}
+
+// SanitizeDSN masks passwords in DSN or database URLs for safe logging.
+func SanitizeDSN(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "[redacted-invalid-url]"
+	}
+	if u.User != nil {
+		if _, hasPass := u.User.Password(); hasPass {
+			u.User = url.UserPassword(u.User.Username(), "redacted")
+		}
+	}
+	return u.String()
 }

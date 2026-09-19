@@ -39,6 +39,10 @@ func main() {
 	if *admitRate > 0 {
 		cfg.AdmissionRate = *admitRate
 	}
+	if err := cfg.Validate(); err != nil {
+		logger.Error("invalid configuration", "err", err)
+		os.Exit(1)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
