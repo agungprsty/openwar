@@ -9,6 +9,7 @@ import (
 
 	"github.com/openwar/openwar/internal/lua"
 	"github.com/openwar/openwar/internal/metrics"
+	"github.com/openwar/openwar/internal/resilience"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -19,6 +20,7 @@ type ShardRouter struct {
 	shards  int
 	reserve *redis.Script
 	release *redis.Script
+	redisCB *resilience.CircuitBreaker
 }
 
 func NewShardRouter(rdb *redis.Client, shards int) *ShardRouter {
@@ -27,6 +29,7 @@ func NewShardRouter(rdb *redis.Client, shards int) *ShardRouter {
 		shards:  shards,
 		reserve: redis.NewScript(lua.ReserveStock),
 		release: redis.NewScript(lua.ReleaseStock),
+		redisCB: resilience.NewCircuitBreaker(resilience.DefaultConfig()),
 	}
 }
 
@@ -52,8 +55,16 @@ func (r *ShardRouter) Reserve(ctx context.Context, sku, userID string) (string, 
 
 	for offset := 0; offset < r.shards; offset++ { // at most one full sweep
 		key := fmt.Sprintf("inventory:%s:shard:%d", sku, (home+offset)%r.shards)
-		res, err := r.reserve.Run(ctx, r.rdb, []string{key}).Int64Slice()
+		var res []int64
+		err := r.redisCB.Execute(ctx, func() error {
+			var innerErr error
+			res, innerErr = r.reserve.Run(ctx, r.rdb, []string{key}).Int64Slice()
+			return innerErr
+		})
 		if err != nil {
+			if errors.Is(err, resilience.ErrCircuitOpen) {
+				return "", err
+			}
 			continue // Redis hiccup → try another shard
 		}
 		if res[0] == 1 {
@@ -70,7 +81,12 @@ func (r *ShardRouter) Reserve(ctx context.Context, sku, userID string) (string, 
 // Compensate restores stock guarded by the reservation state machine so two
 // retriers can never double-INCR. Returns remaining-after-restore on success.
 func (r *ShardRouter) Compensate(ctx context.Context, resKey, invKey string, qty int64, reason string) (int64, error) {
-	res, err := r.release.Run(ctx, r.rdb, []string{resKey}, invKey, qty, reason).Result()
+	var res interface{}
+	err := r.redisCB.Execute(ctx, func() error {
+		var innerErr error
+		res, innerErr = r.release.Run(ctx, r.rdb, []string{resKey}, invKey, qty, reason).Result()
+		return innerErr
+	})
 	if err != nil {
 		return 0, err
 	}
@@ -115,9 +131,17 @@ func toInt(v interface{}) int64 {
 }
 
 func (r *ShardRouter) latchSoldOut(ctx context.Context, sku string) {
-	r.rdb.Set(ctx, "soldout:"+sku, 1, 0)
+	r.redisCB.Execute(ctx, func() error {
+		return r.rdb.Set(ctx, "soldout:"+sku, 1, 0).Err()
+	})
 }
 
 func (r *ShardRouter) isSoldOut(ctx context.Context, sku string) bool {
-	return r.rdb.Exists(ctx, "soldout:"+sku).Val() == 1
+	var exists int64
+	r.redisCB.Execute(ctx, func() error {
+		var err error
+		exists, err = r.rdb.Exists(ctx, "soldout:"+sku).Result()
+		return err
+	})
+	return exists == 1
 }

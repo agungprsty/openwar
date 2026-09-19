@@ -47,7 +47,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr, PoolSize: 256})
+	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr, Password: cfg.RedisPass, PoolSize: 256})
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		logger.Error("redis unavailable", "err", err)
 		os.Exit(1)

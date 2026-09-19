@@ -122,7 +122,7 @@ func Middleware(rdb *redis.Client, window time.Duration) func(http.Handler) http
 
 			// First time → execute, capture + cache the response.
 			ctx := context.WithValue(r.Context(), idemKeyCtx, rkey)
-			rec := &responseRecorder{ResponseWriter: w}
+			rec := &responseRecorder{w: w}
 			next.ServeHTTP(rec, r.WithContext(ctx))
 
 			if rec.status >= 500 {
@@ -146,14 +146,18 @@ func Middleware(rdb *redis.Client, window time.Duration) func(http.Handler) http
 }
 
 type responseRecorder struct {
-	http.ResponseWriter
+	w      http.ResponseWriter
 	status int
 	body   []byte
 }
 
+func (r *responseRecorder) Header() http.Header {
+	return r.w.Header()
+}
+
 func (r *responseRecorder) WriteHeader(code int) {
 	r.status = code
-	r.ResponseWriter.WriteHeader(code)
+	r.w.WriteHeader(code)
 }
 
 func (r *responseRecorder) Write(b []byte) (int, error) {
@@ -168,7 +172,7 @@ func (r *responseRecorder) Write(b []byte) (int, error) {
 			r.body = append(r.body, b...)
 		}
 	}
-	return r.ResponseWriter.Write(b)
+	return r.w.Write(b)
 }
 
 // KeyFrom returns the idempotency Redis key stamped by Middleware, or "".

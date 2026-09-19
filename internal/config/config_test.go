@@ -67,37 +67,37 @@ func TestLoad_CustomEnv(t *testing.T) {
 	}
 }
 
-func TestValidate_ProductionSecret(t *testing.T) {
-	prodDefaultCfg := config.Config{
-		AppEnv:    "production",
-		JWTSecret: "dev-secret-change-me",
-	}
-	if err := prodDefaultCfg.Validate(); err == nil {
-		t.Error("expected error when validating production config with default JWT secret, got nil")
-	}
-
-	prodEmptyCfg := config.Config{
-		AppEnv:    "production",
-		JWTSecret: "",
-	}
-	if err := prodEmptyCfg.Validate(); err == nil {
-		t.Error("expected error when validating production config with empty JWT secret, got nil")
-	}
-
-	prodValidCfg := config.Config{
-		AppEnv:    "production",
-		JWTSecret: "prod-secure-random-secret",
-	}
-	if err := prodValidCfg.Validate(); err != nil {
-		t.Errorf("expected no error for valid production config, got %v", err)
-	}
-
-	devDefaultCfg := config.Config{
+func TestValidate_JWTSecret(t *testing.T) {
+	defaultCfg := config.Config{
 		AppEnv:    "development",
 		JWTSecret: "dev-secret-change-me",
 	}
-	if err := devDefaultCfg.Validate(); err != nil {
-		t.Errorf("expected no error for development config with default secret, got %v", err)
+	if err := defaultCfg.Validate(); err == nil {
+		t.Error("expected error when validating config with default JWT secret, got nil")
+	}
+
+	emptyCfg := config.Config{
+		AppEnv:    "production",
+		JWTSecret: "",
+	}
+	if err := emptyCfg.Validate(); err == nil {
+		t.Error("expected error when validating config with empty JWT secret, got nil")
+	}
+
+	shortCfg := config.Config{
+		AppEnv:    "production",
+		JWTSecret: "prod-secure-random-secret", // 25 chars
+	}
+	if err := shortCfg.Validate(); err == nil {
+		t.Error("expected error when validating config with short JWT secret, got nil")
+	}
+
+	validCfg := config.Config{
+		AppEnv:    "production",
+		JWTSecret: "this-is-a-very-secure-secret-that-is-at-least-32-bytes",
+	}
+	if err := validCfg.Validate(); err != nil {
+		t.Errorf("expected no error for valid config, got %v", err)
 	}
 }
 

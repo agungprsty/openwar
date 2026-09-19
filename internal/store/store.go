@@ -183,6 +183,11 @@ func (s *Store) CountOrders(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
+func (s *Store) ClearOrders(ctx context.Context) error {
+	_, err := s.pool.Exec(ctx, `TRUNCATE openwar.orders`)
+	return err
+}
+
 // CancelOrderTimeout performs an atomic CAS status update for an expired order.
 // Returns true if the order status was updated from PENDING_PAYMENT to CANCELLED_TIMEOUT.
 func (s *Store) CancelOrderTimeout(ctx context.Context, orderID string) (bool, error) {

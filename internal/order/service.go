@@ -13,6 +13,7 @@ import (
 	"github.com/openwar/openwar/internal/inventory"
 	"github.com/openwar/openwar/internal/middleware"
 	"github.com/openwar/openwar/internal/queue"
+	"github.com/openwar/openwar/internal/resilience"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -47,6 +48,7 @@ type Service struct {
 	js             nats.JetStreamContext
 	router         *inventory.ShardRouter
 	reservationTTL time.Duration
+	natsCB         *resilience.CircuitBreaker
 }
 
 func NewService(rdb *redis.Client, nc *nats.Conn, js nats.JetStreamContext, router *inventory.ShardRouter, reservationTTL time.Duration) *Service {
@@ -56,6 +58,7 @@ func NewService(rdb *redis.Client, nc *nats.Conn, js nats.JetStreamContext, rout
 		js:             js,
 		router:         router,
 		reservationTTL: reservationTTL,
+		natsCB:         resilience.NewCircuitBreaker(resilience.DefaultConfig()),
 	}
 }
 
@@ -101,25 +104,67 @@ func (s *Service) Place(ctx context.Context, o Order) (string, error) {
 }
 
 func (s *Service) publish(ctx context.Context, payload []byte) error {
-	ack, err := s.js.Publish(queue.OrdersCreated, payload)
-	if err != nil || ack == nil {
-		return errors.New("nats publish: no ack")
-	}
-	return nil
+	return s.natsCB.Execute(ctx, func() error {
+		var err error
+		var ack *nats.PubAck
+		backoff := 100 * time.Millisecond
+		
+		for i := 0; i < 3; i++ {
+			ack, err = s.js.Publish(queue.OrdersCreated, payload)
+			if err == nil && ack != nil {
+				return nil
+			}
+			if i == 2 {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+				backoff *= 2
+			}
+		}
+		
+		if err == nil {
+			err = errors.New("no ack")
+		}
+		return fmt.Errorf("nats publish failed after retries: %w", err)
+	})
 }
 
 // ArmTimeout schedules a one-shot payment timeout event using JetStream's native scheduler.
 func (s *Service) ArmTimeout(ctx context.Context, orderID string, deadline time.Time) error {
-	m := nats.NewMsg(queue.SchedulesTimeoutPrefix + orderID)
-	m.Data = []byte(orderID)
-	m.Header.Set("Nats-Schedule", "@at "+deadline.UTC().Format(time.RFC3339))
-	m.Header.Set("Nats-Schedule-Target", queue.OrdersTimeout)
+	return s.natsCB.Execute(ctx, func() error {
+		m := nats.NewMsg(queue.SchedulesTimeoutPrefix + orderID)
+		m.Data = []byte(orderID)
+		m.Header.Set("Nats-Schedule", "@at "+deadline.UTC().Format(time.RFC3339))
+		m.Header.Set("Nats-Schedule-Target", queue.OrdersTimeout)
 
-	ack, err := s.js.PublishMsg(m)
-	if err != nil || ack == nil {
-		return fmt.Errorf("arm timeout publish: %w", err)
-	}
-	return nil
+		var err error
+		var ack *nats.PubAck
+		backoff := 100 * time.Millisecond
+		
+		for i := 0; i < 3; i++ {
+			ack, err = s.js.PublishMsg(m)
+			if err == nil && ack != nil {
+				return nil
+			}
+			if i == 2 {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+				backoff *= 2
+			}
+		}
+		
+		if err == nil {
+			err = errors.New("no ack")
+		}
+		return fmt.Errorf("arm timeout publish failed after retries: %w", err)
+	})
 }
 
 // genOrderID prefixes the order id with the request id when present (typed

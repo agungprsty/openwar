@@ -2,6 +2,7 @@ package waitingroom
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/openwar/openwar/internal/lua"
@@ -51,12 +52,33 @@ func (w *Worker) loop() {
 	}
 }
 
-// tickOnce admits the next batch of live sessions.
+// tickOnce admits the next batch of live sessions across target or all active rooms.
 func (w *Worker) tickOnce(ctx context.Context) {
+	var events []string
+	if w.event == "*" || w.event == "" {
+		keys, err := w.room.rdb.Keys(ctx, "room:*:queue").Result()
+		if err == nil {
+			for _, k := range keys {
+				parts := strings.Split(k, ":")
+				if len(parts) == 3 {
+					events = append(events, parts[1])
+				}
+			}
+		}
+	} else {
+		events = []string{w.event}
+	}
+
+	for _, ev := range events {
+		w.tickOnceForEvent(ctx, ev)
+	}
+}
+
+func (w *Worker) tickOnceForEvent(ctx context.Context, event string) {
 	pipe := w.room.rdb.TxPipeline()
-	pipe.Eval(ctx, lua.AdmitBatch, []string{queueKey(w.event)},
-		hbKey(w.event, ""),    // prefix
-		admitKey(w.event, ""), // prefix
+	pipe.Eval(ctx, lua.AdmitBatch, []string{queueKey(event)},
+		hbKey(event, ""),    // prefix
+		admitKey(event, ""), // prefix
 		w.rate,
 		int(w.room.admissionTTL.Seconds()),
 	)
@@ -79,15 +101,15 @@ func (w *Worker) tickOnce(ctx context.Context) {
 	}
 
 	for _, sid := range admitted {
-		metrics.AdmittedTotal.WithLabelValues(w.event).Inc()
+		metrics.AdmittedTotal.WithLabelValues(event).Inc()
 		if w.onAdmit != nil {
-			w.onAdmit(ctx, w.event, sid)
+			w.onAdmit(ctx, event, sid)
 		}
 	}
 
-	metrics.QueueDepth.WithLabelValues(w.event).Set(float64(w.depth(ctx)))
+	metrics.QueueDepth.WithLabelValues(event).Set(float64(w.depthForEvent(ctx, event)))
 }
 
-func (w *Worker) depth(ctx context.Context) int64 {
-	return w.room.rdb.ZCard(ctx, queueKey(w.event)).Val()
+func (w *Worker) depthForEvent(ctx context.Context, event string) int64 {
+	return w.room.rdb.ZCard(ctx, queueKey(event)).Val()
 }

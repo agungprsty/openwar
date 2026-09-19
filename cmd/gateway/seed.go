@@ -27,7 +27,7 @@ func runSeed(logger *slog.Logger) {
 	}
 
 	ctx := context.Background()
-	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr, PoolSize: 64})
+	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr, Password: cfg.RedisPass, PoolSize: 64})
 
 	seeder := inventory.NewSeeder(rdb, cfg.InventoryShards)
 	sku := *event + ":ticket"
@@ -63,6 +63,10 @@ func seedCatalog(ctx context.Context, databaseURL, event, sku string, qty int64,
 	}
 	defer orders.Close()
 
+	if err := orders.ClearOrders(ctx); err != nil {
+		return fmt.Errorf("clear orders: %w", err)
+	}
+
 	if err := orders.UpsertProduct(ctx, store.Product{
 		Sku:             sku,
 		Name:            event + " ticket",
@@ -74,8 +78,8 @@ func seedCatalog(ctx context.Context, databaseURL, event, sku string, qty int64,
 		return err
 	}
 
-	// Demo users the JWT demo can act as (uid=user-42 is the live demo token).
-	for i := 1; i <= 50; i++ {
+	// Demo users for load testing (must exceed K6 VU count).
+	for i := 1; i <= 2000; i++ {
 		id := fmt.Sprintf("user-%d", i)
 		if err := orders.UpsertUser(ctx, id, id+"@demo.openwar", "Demo User "+id); err != nil {
 			return err

@@ -3,9 +3,12 @@ name: openwar
 # Environment shared by every app binary (service names resolve via the
 # same user-defined network; per-service overrides add their own keys).
 x-app-env: &app-env
+  APP_ENV: "production"
   REDIS_ADDR: "redis:6379"
+  REDIS_PASS: "openwar-redis-pass"
   NATS_URL: "nats://nats:4222"
   DATABASE_URL: "postgres://openwar:openwar@postgres:5432/openwar"
+  JWT_SECRET: "openwar-super-secret-key-32-bytes-long"
 
 services:
   # ── Infrastructure ──────────────────────────────────────────────────────
@@ -28,7 +31,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "openwar-redis-pass"]
     ports:
       - "6379:6379"
     volumes:
@@ -80,7 +83,7 @@ services:
       <<: *app-env
       LISTEN_ADDR: ":8080"
       BACKEND_URL: "http://backend-demo:9001"
-      JWT_SECRET: "docker-demo-secret"
+      ALLOWED_ORIGINS: "http://localhost"
       ADMISSION_RATE: "100"
       INVENTORY_SHARDS: "32"
     depends_on:
@@ -102,7 +105,7 @@ services:
       <<: *app-env
       PAYMENT_WINDOW: "15m"
       ADMISSION_RATE: "100"
-      ADMISSION_EVENT: "flash-sale-001"
+      ADMISSION_EVENT: "*"
     depends_on:
       postgres:
         condition: service_healthy
@@ -114,9 +117,12 @@ services:
   # ── Tools (run explicitly via: docker compose --profile tools run --rm k6) ──
   k6:
     image: grafana/k6:latest
+    command: ["run", "/scripts/flashsale.js"]
     profiles: ["tools"]
     volumes:
       - ../test:/scripts
+    environment:
+      JWT_SECRET: "openwar-super-secret-key-32-bytes-long"
     depends_on:
       gateway:
         condition: service_started

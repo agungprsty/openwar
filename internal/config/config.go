@@ -13,6 +13,7 @@ type Config struct {
 	AppEnv      string
 	ListenAddr  string
 	RedisAddr   string
+	RedisPass   string
 	NATSURL     string
 	DatabaseURL string
 	BackendURL     string
@@ -76,6 +77,7 @@ func Load() Config {
 		AppEnv:            getenv("APP_ENV", "development"),
 		ListenAddr:        getenv("LISTEN_ADDR", ":8080"),
 		RedisAddr:         getenv("REDIS_ADDR", "localhost:6379"),
+		RedisPass:         getenv("REDIS_PASS", ""),
 		NATSURL:           getenv("NATS_URL", "nats://localhost:4222"),
 		DatabaseURL:       getenv("DATABASE_URL", "postgres://openwar:openwar@localhost:5432/openwar"),
 		BackendURL:        getenv("BACKEND_URL", "http://backend-demo:9001"),
@@ -94,8 +96,11 @@ func Load() Config {
 
 // Validate checks configuration for security risks and missing fields.
 func (c Config) Validate() error {
-	if (c.AppEnv == "production" || c.AppEnv == "prod") && (c.JWTSecret == "" || c.JWTSecret == "dev-secret-change-me") {
-		return errors.New("JWT_SECRET must be configured with a secure secret in production")
+	if len(c.JWTSecret) < 32 {
+		return errors.New("JWT_SECRET must be at least 32 characters long for secure HMAC-SHA256 signing")
+	}
+	if c.JWTSecret == "dev-secret-change-me" {
+		return errors.New("JWT_SECRET cannot be the default value")
 	}
 	return nil
 }

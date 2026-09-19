@@ -1,3 +1,29 @@
+# Environment files (keep .env private, only commit .env.example)
+.env
+.env.local
+.env.*.local
+
+# Test result files and coverage reports
 test/result_*.json
 test/result.json
+test/result_iphone.json
+coverage.out
+coverage.html
+
+# Logs
 *.log
+logs/
+
+# Build binaries
+bin/
+gateway
+worker
+backend-demo
+openwar
+
+# OS & Editor files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo

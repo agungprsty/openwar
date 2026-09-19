@@ -28,7 +28,7 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	cfg := config.Load()
 
-	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr, PoolSize: 256})
+	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr, Password: cfg.RedisPass, PoolSize: 256})
 	nc, err := nats.Connect(cfg.NATSURL)
 	if err != nil {
 		logger.Error("nats unavailable", "err", err)

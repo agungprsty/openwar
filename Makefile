@@ -1,3 +1,8 @@
+ifneq (,$(wildcard ./.env))
+    include .env
+    export
+endif
+
 .PHONY: build gateway worker backend-demo seed up down logs test docker-up docker-down
 
 build:
@@ -12,8 +17,12 @@ worker:
 backend-demo:
 	go run ./cmd/backend-demo
 
+EVENT ?= flash-sale-001
+QTY ?= 1000
+SHARDS ?= 32
+
 seed:
-	go run ./cmd/gateway seed-events --event flash-sale-001 --qty 1000 --shards 32
+	go run ./cmd/gateway seed-events --event $(EVENT) --qty $(QTY) --shards $(SHARDS)
 
 up:
 	docker compose -f deploy/docker-compose.yml up --build
@@ -32,3 +41,9 @@ test:
 
 fmt:
 	gofmt -l -w cmd internal
+
+load-test:
+	docker compose -f deploy/docker-compose.yml --profile tools run --rm -e EVENT=$(EVENT) k6
+
+validate:
+	./test/validate.sh $(EVENT) $(QTY)

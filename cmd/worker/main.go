@@ -32,7 +32,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr, PoolSize: 128})
+	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr, Password: cfg.RedisPass, PoolSize: 128})
 	nc, err := nats.Connect(cfg.NATSURL)
 	if err != nil {
 		logger.Error("nats unavailable", "err", err)
@@ -65,7 +65,7 @@ func main() {
 	defer reconciler.Stop()
 
 	// Admission worker
-	event := getenv("ADMISSION_EVENT", "flash-sale-001")
+	event := getenv("ADMISSION_EVENT", "*")
 	room := waitingroom.New(rdb, cfg.HeartbeatTTL, cfg.AdmissionTTL)
 	tick := time.Second
 
